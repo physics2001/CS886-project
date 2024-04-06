@@ -17,18 +17,18 @@ convs = ["mr", "gat"]
 drop_outs = [0.2, 0.0]
 
 RESULT_LIST = []
-RESULT_COLUMNS = ["num_filters", "num_blocks", "conv", "dropout", "F1_score", "Accuracy"]
+RESULT_COLUMNS = ["num_filters", "num_blocks", "conv", "dropout", "F1_score", "Accuracy", "Prediction Time"]
 
 for n_filter in n_filters: 
     for n_block in n_blocks: 
         for conv in convs: 
             for dropout in drop_outs: 
                 MODEL_CONFIG = {"n_filters":n_filter, "n_blocks":n_block, "conv": conv, "dropout":dropout}
-                test_value, test_acc = run_pipeline(LR_PATIENCE, LR, SCHEDULER, 
+                test_value, test_acc, pred_time= run_pipeline(LR_PATIENCE, LR, SCHEDULER, 
                                                     BATCH_SIZE, DEVICE, MAX_EPOCHS, DATA_FOLDER, 
                                                     MODEL_TYPE, SAVE_PATH, MODEL_CONFIG)
                 
-                RESULT_LIST.append([n_filters, n_blocks, conv, dropout, test_value, test_acc])
+                RESULT_LIST.append([n_filter, n_block, conv, dropout, test_value, test_acc, pred_time])
 
 result_df = pd.DataFrame(data = RESULT_LIST, columns = RESULT_COLUMNS)
 result_df.to_csv("result/DeepGCN.csv")

@@ -16,7 +16,7 @@ n_blocks = [4, 16, 32]
 powers = [[0, 1, 2], [0, 1]]
 
 RESULT_LIST = []
-RESULT_COLUMNS = ["hidden_feature", "num_blocks", "power", "F1_score", "Accuracy"]
+RESULT_COLUMNS = ["hidden_feature", "num_blocks", "power", "F1_score", "Accuracy", "Prediction Time"]
 
 for h_feats in hidden_features: 
     for n_block in n_blocks: 
@@ -24,11 +24,11 @@ for h_feats in hidden_features:
             if h_feats % len(power) != 0: 
                 continue
             MODEL_CONFIG = {"h_feats":h_feats, "n_blocks":n_block, "powers": power}
-            test_value, test_acc = run_pipeline(LR_PATIENCE, LR, SCHEDULER, 
+            test_value, test_acc, pred_time = run_pipeline(LR_PATIENCE, LR, SCHEDULER, 
                                                 BATCH_SIZE, DEVICE, MAX_EPOCHS, DATA_FOLDER, 
                                                 MODEL_TYPE, SAVE_PATH, MODEL_CONFIG)
             
-            RESULT_LIST.append([h_feats, n_block, power[-1], test_value, test_acc])
+            RESULT_LIST.append([h_feats, n_block, power[-1], test_value, test_acc, pred_time])
 
 result_df = pd.DataFrame(data = RESULT_LIST, columns = RESULT_COLUMNS)
 result_df.to_csv("result/MixHop.csv")

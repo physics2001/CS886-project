@@ -12,7 +12,7 @@ import torch
 import torch_geometric.datasets as GeoData
 from torch_geometric.loader import NeighborLoader
 from sklearn.metrics import f1_score
-from torch_geometric.transforms import RandomLinkSplit
+from torch_geometric.transforms import RandomNodeSplit
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(ROOT_DIR)
 from DeepGCNModel import DeepGCN
@@ -21,9 +21,10 @@ from utils.metrics import AverageMeter
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from models import APPNPModel, MixHopModel
 import matplotlib.pyplot as plt
+import time
 
 
-def train_model(model, train_loader, val_loader, test_loader, DEVICE, LR, MODEL_TYPE,
+def train_model(model, graph, DEVICE, LR, MODEL_TYPE,
                 LR_PATIENCE, MAX_EPOCHS, SAVE_PATH, MODEL_CONFIG_STRING, SCHEDULER):
     info_format = 'Epoch: [{}]\t loss: {: .6f} train mF1: {: .6f} \t val mF1: {: .6f}\t test mF1: {:.6f} \t ' \
                   'best val mF1: {: .6f}\t best test mF1: {:.6f}'
@@ -34,9 +35,6 @@ def train_model(model, train_loader, val_loader, test_loader, DEVICE, LR, MODEL_
     scheduler = ReduceLROnPlateau(optimizer, "min", patience=LR_PATIENCE, verbose=True, 
                                   factor=0.5, cooldown=30, min_lr=LR/100)
 
-    print('===> Init Metric ...')
-    losses = AverageMeter()
-
     best_val_value = 0.
     best_test_value = 0.
     
@@ -45,14 +43,20 @@ def train_model(model, train_loader, val_loader, test_loader, DEVICE, LR, MODEL_
     
     train_scores = []
     val_scores = []
+    train_losses = []
+    val_losses = []
+    
+    train_mask = graph.train_mask
+    val_mask = graph.val_mask
+    test_mask = graph.test_mask
     
     print('===> Start training ...')
     early_stop_epoch_count = 0
     for epoch in range(MAX_EPOCHS):
         early_stop_epoch_count += 1
-        loss, train_value, train_acc = step(model, train_loader, optimizer, criterion, losses, DEVICE)
-        val_value, val_acc = test(model, val_loader, DEVICE)
-        test_value, test_acc = test(model, test_loader, DEVICE)
+        loss, train_value, train_acc = step(model, graph, train_mask, optimizer, criterion, DEVICE)
+        val_loss, val_value, val_acc, _ = test(model, graph, val_mask, criterion, DEVICE)
+        test_loss, test_value, test_acc, _ = test(model, graph, test_mask, criterion, DEVICE)
 
         if val_value >= best_val_value:
             best_val_value = val_value
@@ -78,12 +82,15 @@ def train_model(model, train_loader, val_loader, test_loader, DEVICE, LR, MODEL_
             f"test acc: {test_acc:.4f} (best {best_test_acc:.4f})"
         )
         if SCHEDULER == 'ReduceLROnPlateau':
-            scheduler.step(losses.avg)
+            scheduler.step(loss)
         else:
             scheduler.step()
         
         train_scores.append(train_value)
         val_scores.append(val_value)
+        
+        train_losses.append(loss.cpu().detach().numpy())
+        val_losses.append(val_loss.cpu().detach().numpy())
         
         if early_stop_epoch_count >= 20: 
             break
@@ -96,60 +103,62 @@ def train_model(model, train_loader, val_loader, test_loader, DEVICE, LR, MODEL_
     plt.ylim((0, 1))
     plt.xlabel("epoch")
     plt.ylabel("F1 score")
-    plt.savefig("plots/train_score_" + MODEL_TYPE + MODEL_CONFIG_STRING + ".png")
+    plt.legend(loc='lower right')
+    plt.savefig("plots/F1_score_comparison_" + MODEL_TYPE + MODEL_CONFIG_STRING + ".png")
+    plt.close()
     
+    plt.Figure(figsize=(6, 6))
+    plt.plot(list(range(len(train_losses))), train_losses, '-b', label='train loss')
+    plt.plot(list(range(len(val_losses))), val_losses, '-r', label='val loss')
+    plt.ylim((0, 1))
+    plt.xlabel("epoch")
+    plt.ylabel("Loss")
+    plt.legend(loc='lower right')
+    plt.savefig("plots/Loss_comparison_" + MODEL_TYPE + MODEL_CONFIG_STRING + ".png")
+    plt.close()
 
 
-def step(model, train_loader, optimizer, criterion, losses, DEVICE):
+def step(model, graph, train_mask, optimizer, criterion, DEVICE):
     model.train()
-    micro_f1 = 0.
-    count = 0.
-    acc = 0
-    losses.reset()
-    for i, data in enumerate(train_loader):
-        data = data.to(DEVICE)
-        gt = data.y
     
-        # ------------------ zero, output, loss
-        optimizer.zero_grad()
-        out = model(data)
-        loss = criterion(out, gt.float())
-        pred = out.argmin(1)
+    graph = graph.to(DEVICE)
 
-        micro_f1 += f1_score(gt.cpu().detach().numpy(),
-                             (out > 0).cpu().detach().numpy(), average='micro') * len(gt)
-        count += len(gt)
-        # ------------------ optimization
-        loss.backward()
-        optimizer.step()
-        
-        acc += (pred.cpu().detach() == gt[:,0].cpu().detach()).float().sum()
+    # ------------------ zero, output, loss
+    optimizer.zero_grad()
+    out = model(graph)
+    loss = criterion(out[train_mask], graph.y[train_mask])
+    pred = out.argmin(1)
 
-        losses.update(loss.item())
-    return losses.avg, micro_f1/count, acc/count
+    micro_f1 = f1_score(graph.y[train_mask].cpu().detach().numpy(),
+                         (out[train_mask] > 0).cpu().detach().numpy(), average='micro')
+    
+    # ------------------ optimization
+    loss.backward()
+    optimizer.step()
+    
+    acc = (pred[train_mask].cpu().detach() == graph.y[train_mask][:,0].cpu().detach()).float().mean()
+
+    return loss, micro_f1, acc
 
 
-def test(model, loader, DEVICE):
+def test(model, graph, mask, criterion, DEVICE):
     model.eval()
-    count = 0
-    micro_f1 = 0.
-    acc = 0
+    loss = None
     with torch.no_grad():
-        for i, data in enumerate(loader):
-            data = data.to(DEVICE)
-            out = model(data)
-            pred = out.argmin(1)
-
-            num_node = len(data.x)
-            micro_f1 += f1_score(data.y.cpu().detach().numpy(),
-                                 (out > 0).cpu().detach().numpy(), average='micro') * num_node
-            
-            acc += (pred.cpu().detach() == data.y[:,0].cpu().detach()).float().sum()
-            
-            count += num_node
-        micro_f1 = float(micro_f1)/count
-        acc /= count
-    return micro_f1, acc
+        graph = graph.to(DEVICE)
+        start = time.time()
+        out = model(graph)
+        end = time.time()
+        
+        pred = out.argmin(1)
+        if criterion is not None: 
+            loss = criterion(out[mask], graph.y[mask])
+        micro_f1 = f1_score(graph.y[mask].cpu().detach().numpy(),
+                             (out[mask] > 0).cpu().detach().numpy(), average='micro')
+        
+        acc = (pred[mask].cpu().detach() == graph.y[mask][:,0].cpu().detach()).float().mean()
+        
+    return loss, micro_f1, acc, end-start
 
 
 def save_ckpt(model, optimizer, scheduler, epoch, save_path, name_pre, name_post='best'):
@@ -170,11 +179,9 @@ def run_pipeline(LR_PATIENCE, LR, SCHEDULER, BATCH_SIZE, DEVICE,
     print('===> Creating dataloader ...')
     github_data = GeoData.GitHub(root=DATA_FOLDER)
     github_data.data.y = torch.stack((github_data.data.y, 1-github_data.data.y), 1).float()
-    transform = RandomLinkSplit(is_undirected=True)
-    train_data, val_data, test_data = transform(github_data[0])
-    train_loader = NeighborLoader(train_data, batch_size=BATCH_SIZE, shuffle=True, num_neighbors=[30]*2)
-    val_loader = NeighborLoader(val_data, batch_size=BATCH_SIZE, shuffle=True, num_neighbors=[30]*2)
-    test_loader = NeighborLoader(test_data, batch_size=BATCH_SIZE, shuffle=True, num_neighbors=[30]*2)
+    transform = RandomNodeSplit(split='train_rest', num_splits=1, num_val=7540, num_test=11310)
+    print(transform(github_data[0]))
+    graph = transform(github_data[0])
     n_classes = github_data.num_classes
     
     MODEL_CONFIG_STRING = str(MODEL_CONFIG)
@@ -205,7 +212,7 @@ def run_pipeline(LR_PATIENCE, LR, SCHEDULER, BATCH_SIZE, DEVICE,
         model = MixHopModel(in_feats=github_data.num_features, h_feats=h_feats,
                             num_classes=n_classes, num_blocks=n_blocks, powers=powers).to(DEVICE)
     
-    train_model(model, train_loader, val_loader, test_loader, DEVICE, LR, MODEL_TYPE,
+    train_model(model, graph, DEVICE, LR, MODEL_TYPE,
                 LR_PATIENCE, MAX_EPOCHS, SAVE_PATH, MODEL_CONFIG_STRING, SCHEDULER)
 
     # load best model on validation dataset
@@ -213,14 +220,15 @@ def run_pipeline(LR_PATIENCE, LR, SCHEDULER, BATCH_SIZE, DEVICE,
     print('===> loading pre-trained ...')
     best_model_path = '{}/{}_val_best.pth'.format(SAVE_PATH, MODEL_CONFIG_STRING)
     model, best_value, epoch = load_pretrained_models(model, best_model_path, "test")
-    val_value, val_acc = test(model, val_loader, DEVICE)
+    loss, val_value, val_acc, _ = test(model, graph, graph.val_mask, None, DEVICE)
     print('Val m-F1: {: 6f}'.format(val_value))
     print('Val acc: {: 6f}'.format(val_acc.item()))
-    test_value, test_acc = test(model, test_loader, DEVICE)
+    loss, test_value, test_acc, pred_time = test(model, graph, graph.test_mask, None, DEVICE)
     print('Test m-F1: {: 6f}'.format(test_value))
     print('Test acc: {: 6f}'.format(test_acc.item()))
+    print("prediction time: {: 6f}".format(pred_time))
     
-    return test_value, test_acc.item()
+    return test_value, test_acc.item(), pred_time
         
         
         

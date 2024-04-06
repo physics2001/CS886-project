@@ -17,7 +17,7 @@ alphas = [0.2, 0.05]
 drop_outs = [0.2, 0.0] 
 
 RESULT_LIST = []
-RESULT_COLUMNS = ["hidden_feature", "num_iteration", "alpha", "dropout", "F1_score", "Accuracy"]
+RESULT_COLUMNS = ["hidden_feature", "num_iteration", "alpha", "dropout", "F1_score", "Accuracy", "Prediction Time"]
 
 for h_feats in hidden_features: 
     for n_iter in num_iterations: 
@@ -25,11 +25,11 @@ for h_feats in hidden_features:
             for dropout in drop_outs: 
                 MODEL_CONFIG = {"h_feats":h_feats, "num_iterations":n_iter, 
                                 "alpha":alpha, "dropout":dropout}
-                test_value, test_acc = run_pipeline(LR_PATIENCE, LR, SCHEDULER, 
+                test_value, test_acc, pred_time = run_pipeline(LR_PATIENCE, LR, SCHEDULER, 
                                                     BATCH_SIZE, DEVICE, MAX_EPOCHS, DATA_FOLDER, 
                                                     MODEL_TYPE, SAVE_PATH, MODEL_CONFIG)
                 
-                RESULT_LIST.append([h_feats, n_iter, alpha, dropout, test_value, test_acc])
+                RESULT_LIST.append([h_feats, n_iter, alpha, dropout, test_value, test_acc, pred_time])
 
 result_df = pd.DataFrame(data = RESULT_LIST, columns = RESULT_COLUMNS)
 result_df.to_csv("result/APPNP.csv")
